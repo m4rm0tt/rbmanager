@@ -93,6 +93,18 @@ class PlaylistEntryRow:
     playlist_id: str
 
 
+@dataclass
+class RowLocation:
+    """Repère une ligne à la fois par son contenu (row_addr) et par l'entrée d'index
+    qui la référence (page_start + presence_offset + bit_index), pour permettre de la
+    marquer supprimée sans avoir à retrouver ces informations une seconde fois."""
+
+    page_start: int
+    presence_addr: int
+    bit_index: int
+    row_addr: int
+
+
 def _read_device_sql_string(buf: bytes, pos: int) -> str:
     """Décode une chaîne DeviceSQL (courte ASCII, longue ASCII, ou longue UTF-16LE)."""
     length_and_kind = buf[pos]
@@ -136,22 +148,62 @@ def _parse_file_header(buf: bytes) -> FileHeader:
     return FileHeader(len_page, num_tables, next_unused_page, sequence, tables)
 
 
-def _iter_row_offsets(buf: bytes, page_start: int, len_page: int, num_row_offsets: int) -> list[tuple[int, bool]]:
-    """Renvoie [(offset_dans_le_heap, present), ...] pour toutes les lignes allouées de la page."""
+def _iter_row_slots(buf: bytes, page_start: int, len_page: int, num_row_offsets: int) -> list[RowLocation]:
+    """Renvoie une RowLocation pour chaque entrée d'index allouée de la page (présente ou non)."""
     if num_row_offsets == 0:
         return []
     num_groups = (num_row_offsets - 1) // ROW_GROUP_MAX_ROWS + 1
-    results: list[tuple[int, bool]] = []
+    results: list[RowLocation] = []
     for g in range(num_groups):
         group_end = page_start + len_page - ROW_GROUP_SIZE * g
-        group_start = group_end - ROW_GROUP_SIZE
-        (presence_flags,) = struct.unpack_from("<H", buf, group_start + 32)
+        presence_addr = group_end - 4
         for k in range(ROW_GROUP_MAX_ROWS):
             ofs_addr = group_end - 6 - 2 * k
             (row_offset,) = struct.unpack_from("<H", buf, ofs_addr)
-            present = bool((presence_flags >> k) & 1)
-            results.append((row_offset, present))
+            results.append(
+                RowLocation(
+                    page_start=page_start,
+                    presence_addr=presence_addr,
+                    bit_index=k,
+                    row_addr=page_start + HEAP_START + row_offset,
+                )
+            )
     return results
+
+
+def _is_present(buf: bytes, loc: RowLocation) -> bool:
+    (presence_flags,) = struct.unpack_from("<H", buf, loc.presence_addr)
+    return bool((presence_flags >> loc.bit_index) & 1)
+
+
+def _set_presence(buf: bytearray, loc: RowLocation, present: bool) -> None:
+    """Bascule le bit de présence d'une ligne. N'écrit ni ne déplace jamais les octets de la
+    ligne elle-même : c'est l'opération d'écriture la plus sûre de ce format (pas de
+    réorganisation du tas, pas de risque de chevauchement)."""
+    (flags,) = struct.unpack_from("<H", buf, loc.presence_addr)
+    if present:
+        flags |= 1 << loc.bit_index
+    else:
+        flags &= ~(1 << loc.bit_index) & 0xFFFF
+    struct.pack_into("<H", buf, loc.presence_addr, flags)
+
+
+def _adjust_num_rows_valid(buf: bytearray, page_start: int, delta: int) -> None:
+    """Met à jour le compteur num_rows_valid de l'en-tête de page (num_row_offsets inchangé)."""
+    raw = int.from_bytes(buf[page_start + 0x18 : page_start + 0x1B], "little")
+    num_row_offsets = raw & 0x1FFF
+    num_rows_valid = (raw >> 13) & 0x7FF
+    num_rows_valid += delta
+    if not 0 <= num_rows_valid <= 0x7FF:
+        raise PdbFormatError(
+            f"Calcul num_rows_valid invalide à la page {page_start:#x} (delta={delta})."
+        )
+    new_raw = (num_row_offsets & 0x1FFF) | ((num_rows_valid & 0x7FF) << 13)
+    buf[page_start + 0x18 : page_start + 0x1B] = new_raw.to_bytes(3, "little")
+
+
+def _mark_page_contains_deleted(buf: bytearray, page_start: int) -> None:
+    buf[page_start + 0x1B] |= 0x10  # Bit D (deleted), voir doc du format.
 
 
 def _parse_page_header(buf: bytes, page_start: int) -> dict[str, Any]:
@@ -183,8 +235,8 @@ def _parse_page_header(buf: bytes, page_start: int) -> dict[str, Any]:
     }
 
 
-def _iter_table_rows(buf: bytes, header: FileHeader, table: TablePointer):
-    """Génère (adresse_absolue_de_la_ligne,) pour chaque ligne présente d'une table."""
+def _iter_table_row_locations(buf: bytes, header: FileHeader, table: TablePointer, include_deleted: bool = False):
+    """Génère une RowLocation pour chaque ligne d'une table (présente, ou aussi supprimée si demandé)."""
     page_index = table.first_page
     seen_pages = set()
     while True:
@@ -199,13 +251,19 @@ def _iter_table_rows(buf: bytes, header: FileHeader, table: TablePointer):
         page = _parse_page_header(buf, page_start)
 
         if not page["is_index_page"]:
-            for row_offset, present in _iter_row_offsets(buf, page_start, header.len_page, page["num_row_offsets"]):
-                if present:
-                    yield page_start + HEAP_START + row_offset
+            for loc in _iter_row_slots(buf, page_start, header.len_page, page["num_row_offsets"]):
+                if include_deleted or _is_present(buf, loc):
+                    yield loc
 
         if page_index == table.last_page:
             break
         page_index = page["next_page"]
+
+
+def _iter_table_rows(buf: bytes, header: FileHeader, table: TablePointer):
+    """Génère l'adresse absolue de chaque ligne PRÉSENTE d'une table (pour la lecture)."""
+    for loc in _iter_table_row_locations(buf, header, table):
+        yield loc.row_addr
 
 
 def _parse_playlist_tree_row(buf: bytes, addr: int) -> PlaylistTreeRow:
@@ -235,11 +293,18 @@ def _parse_track_title(buf: bytes, addr: int) -> tuple[str, str]:
 
 
 class PdbFile:
-    """Représentation en lecture seule d'un fichier export.pdb (format historique DeviceSQL)."""
+    """Représentation d'un fichier export.pdb (format historique DeviceSQL).
+
+    Le buffer est chargé entièrement en mémoire sous forme de `bytearray`
+    modifiable. Les méthodes d'écriture ne modifient que des bits de
+    présence déjà alloués (aucune réorganisation du tas pour l'instant) :
+    voir `supprimer_playlist` et `retirer_morceau`. Rien n'est jamais
+    écrit sur le disque avant l'appel explicite à `enregistrer()`.
+    """
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
-        self._buf = self.path.read_bytes()
+        self._buf = bytearray(self.path.read_bytes())
         self.header = _parse_file_header(self._buf)
 
     def _table(self, table_type: TableType) -> TablePointer | None:
@@ -270,3 +335,69 @@ class PdbFile:
             track_id, title = _parse_track_title(self._buf, addr)
             titles[track_id] = title
         return titles
+
+    def supprimer_playlist(self, playlist_id: str) -> int:
+        """Marque une playlist (non-dossier) et tous ses morceaux comme supprimés.
+
+        Renvoie le nombre de morceaux retirés avec elle. La suppression de
+        dossiers n'est volontairement pas prise en charge : elle demande
+        une logique récursive (enfants, playlists imbriquées) qui n'a pas
+        encore été conçue ni testée.
+        """
+        tree_table = self._table(TableType.PLAYLIST_TREE)
+        if tree_table is None:
+            raise PdbFormatError("Aucune table playlist_tree dans ce fichier.")
+
+        cible: tuple[RowLocation, PlaylistTreeRow] | None = None
+        for loc in _iter_table_row_locations(self._buf, self.header, tree_table):
+            row = _parse_playlist_tree_row(self._buf, loc.row_addr)
+            if row.id == playlist_id:
+                cible = (loc, row)
+                break
+        if cible is None:
+            raise PdbFormatError(f"Playlist introuvable (id={playlist_id}).")
+        loc, row = cible
+        if row.is_folder:
+            raise PdbFormatError(
+                "La suppression de dossiers n'est pas encore prise en charge dans rbmanager "
+                "(seules les playlists simples peuvent être supprimées pour l'instant)."
+            )
+
+        _set_presence(self._buf, loc, False)
+        _adjust_num_rows_valid(self._buf, loc.page_start, -1)
+        _mark_page_contains_deleted(self._buf, loc.page_start)
+
+        nb_retires = 0
+        entries_table = self._table(TableType.PLAYLIST_ENTRIES)
+        if entries_table is not None:
+            for eloc in _iter_table_row_locations(self._buf, self.header, entries_table):
+                entry = _parse_playlist_entry_row(self._buf, eloc.row_addr)
+                if entry.playlist_id == playlist_id:
+                    _set_presence(self._buf, eloc, False)
+                    _adjust_num_rows_valid(self._buf, eloc.page_start, -1)
+                    _mark_page_contains_deleted(self._buf, eloc.page_start)
+                    nb_retires += 1
+        return nb_retires
+
+    def retirer_morceau(self, playlist_id: str, track_id: str) -> bool:
+        """Retire un morceau d'une playlist. Renvoie False si l'association n'existait pas."""
+        table = self._table(TableType.PLAYLIST_ENTRIES)
+        if table is None:
+            raise PdbFormatError("Aucune table playlist_entries dans ce fichier.")
+        for loc in _iter_table_row_locations(self._buf, self.header, table):
+            entry = _parse_playlist_entry_row(self._buf, loc.row_addr)
+            if entry.playlist_id == playlist_id and entry.track_id == track_id:
+                _set_presence(self._buf, loc, False)
+                _adjust_num_rows_valid(self._buf, loc.page_start, -1)
+                _mark_page_contains_deleted(self._buf, loc.page_start)
+                return True
+        return False
+
+    def enregistrer(self, chemin: str | Path | None = None) -> None:
+        """Écrit le contenu (éventuellement modifié) sur le disque.
+
+        Ne fait aucune sauvegarde elle-même : voir `rbmanager.backup` pour
+        la copie de sécurité qui doit systématiquement précéder cet appel.
+        """
+        cible = Path(chemin) if chemin else self.path
+        cible.write_bytes(bytes(self._buf))

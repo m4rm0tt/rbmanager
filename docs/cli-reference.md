@@ -84,9 +84,58 @@ rbmanager-etape0.exe --usb E:\ --format json
 # -> si succes == true : exploiter le champ "playlists" pour la suite
 ```
 
+## `rbmanager delete-playlist`
+
+Supprime une playlist (pas un dossier) et tous les morceaux qu'elle
+contient. **Écrit sur la clé** : fait systématiquement une sauvegarde
+horodatée d'export.pdb dans `backups/` avant toute modification. Ne
+fonctionne que sur le format historique DeviceSQL (voir `rbmanager-etape0`
+pour savoir quel format ta clé utilise).
+
+| Argument | Obligatoire | Description |
+|----------|-------------|--------------|
+| `--playlist-id` | Oui | ID de la playlist à supprimer (voir la sortie de `rbmanager-etape0`). |
+| `--usb` / `--db-path` | Oui (un des deux) | Comme pour `rbmanager-etape0`. |
+| `--format` | Non | `text` ou `json`. |
+
+Sortie JSON (succès) :
+```json
+{
+  "succes": true,
+  "message": "Playlist 10 supprimée (3 morceau(x) retiré(s) avec elle).",
+  "playlist_id": "10",
+  "nb_morceaux_retires": 3,
+  "backup": "E:\\backups\\export_pdb_20260922_083259.pdb"
+}
+```
+
+## `rbmanager remove-track`
+
+Retire un morceau d'une playlist (la playlist et le morceau restent dans
+la base, seule l'association est supprimée). Même politique de
+sauvegarde automatique que `delete-playlist`.
+
+| Argument | Obligatoire | Description |
+|----------|-------------|--------------|
+| `--playlist-id` | Oui | ID de la playlist. |
+| `--track-id` | Oui | ID du morceau à retirer. |
+| `--usb` / `--db-path` | Oui (un des deux) | Comme pour `rbmanager-etape0`. |
+| `--format` | Non | `text` ou `json`. |
+
+### Codes de sortie spécifiques à `rbmanager` (delete-playlist / remove-track)
+
+| Code | Signification |
+|------|----------------|
+| 5 | Format non supporté en écriture (SQLCipher / Device Library Plus) |
+| 6 | Playlist introuvable |
+| 7 | Opération non supportée (ex : suppression d'un dossier) |
+| 8 | Le morceau n'était pas dans la playlist visée |
+
+Les codes 0, 2, 3, 4, 10 ont le même sens que pour `rbmanager-etape0`.
+
 ## Commandes à venir (v1, non encore implémentées)
 
-Cette section sera complétée au fur et à mesure : `list-playlists`,
-`create-playlist`, `delete-playlist`, `add-track` / `remove-track`,
-`show-playlist`, `suggest-playlist`. Le format restera cohérent avec celui
-documenté ci-dessus (JSON structuré + codes de sortie distincts).
+`create-playlist`, `add-track`, `show-playlist`, `suggest-playlist`. Ces
+opérations demandent d'allouer de nouvelles lignes dans le fichier (plus
+délicat que les bascules de bit de présence utilisées par les commandes
+ci-dessus) et n'ont pas encore été implémentées ni testées.
