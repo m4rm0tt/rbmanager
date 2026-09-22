@@ -26,7 +26,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
-      - name: Builder rbmanager-etape0.exe (lecture seule : liste les playlists)
+      - name: "Builder rbmanager-etape0.exe (lecture seule - liste les playlists)"
         run: |
           pyinstaller --onefile --name rbmanager-etape0 `
             --hidden-import sqlalchemy.dialects.sqlite.pysqlcipher `
@@ -35,7 +35,7 @@ jobs:
             --paths src `
             src/rbmanager/etape0.py
 
-      - name: Builder rbmanager.exe (écriture : delete-playlist, remove-track)
+      - name: "Builder rbmanager.exe (écriture - delete-playlist, remove-track)"
         run: |
           pyinstaller --onefile --name rbmanager `
             --hidden-import sqlalchemy.dialects.sqlite.pysqlcipher `
