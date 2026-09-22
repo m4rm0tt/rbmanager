@@ -89,13 +89,31 @@ Voir `docs/cli-reference.md` pour le détail complet de chaque commande et
 de son format de sortie JSON (référence pensée pour piloter l'outil via un
 agent ou le futur skill Claude).
 
+## Deux formats d'export différents
+
+Rekordbox exporte en réalité deux formats binaires différents sous le nom
+`export.pdb`, selon le matériel visé :
+
+- **Format historique DeviceSQL** (non chiffré) : utilisé par les CDJ/XDJ
+  classiques, dont la **XDJ-RX3**. `pyrekordbox` ne le supporte pas du
+  tout ; rbmanager embarque son propre lecteur (`rbmanager.pdb_format`),
+  basé sur la spécification communautaire de rétro-ingénierie (projet
+  Deep Symmetry "Crate Digger"), faute de bibliothèque existante.
+- **"Device Library Plus"** (SQLite chiffré SQLCipher) : pour du matériel
+  plus récent (OPUS-QUAD, OMNIS-DUO, XDJ-AZ). Lu via `pyrekordbox`.
+
+Le script détecte automatiquement lequel des deux formats est présent sur
+ta clé (champ `format_detecte` dans la sortie JSON) — tu n'as rien à
+préciser.
+
 ## Pourquoi cette étape avant tout le reste ?
 
-Rekordbox chiffre `export.pdb` avec SQLCipher. `pyrekordbox` embarque une
-clé de déchiffrement qui fonctionne pour les versions courantes de
-Rekordbox, mais Pioneer peut la changer à chaque mise à jour majeure du
-logiciel. Valider cette étape 0 sur ta propre clé garantit que la suite du
-projet (v1) part sur des bases qui fonctionnent réellement chez toi.
+Le format historique n'étant pas officiellement documenté par Pioneer, et
+aucune bibliothèque existante ne le prenant en charge pour l'écriture,
+valider cette étape 0 sur ta propre clé est indispensable avant de
+construire le reste du projet (v1 : création/suppression/modification de
+playlists), qui devra écrire dans ce format avec des précautions
+particulières (sauvegarde automatique systématique).
 
 ## Suite du projet
 
