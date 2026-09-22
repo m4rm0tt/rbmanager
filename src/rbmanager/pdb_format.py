@@ -94,6 +94,16 @@ class PlaylistEntryRow:
 
 
 @dataclass
+class TrackInfo:
+    id: str
+    title: str
+    genre_id: str
+    key_id: str
+    tempo_bpm: float
+    filename: str
+
+
+@dataclass
 class RowLocation:
     """Repère une ligne à la fois par son contenu (row_addr) et par l'entrée d'index
     qui la référence (page_start + presence_offset + bit_index), pour permettre de la
@@ -149,15 +159,20 @@ def _parse_file_header(buf: bytes) -> FileHeader:
 
 
 def _iter_row_slots(buf: bytes, page_start: int, len_page: int, num_row_offsets: int) -> list[RowLocation]:
-    """Renvoie une RowLocation pour chaque entrée d'index allouée de la page (présente ou non)."""
+    """Renvoie une RowLocation pour chaque entrée d'index réellement allouée de la page
+    (présente ou non). S'arrête à `num_row_offsets`, pas à 16 par groupe : les emplacements
+    du dernier groupe qui n'ont encore jamais été utilisés ne pointent vers rien de valide
+    (ce sont juste des octets à zéro dans un groupe fraîchement créé) et ne doivent donc
+    jamais être renvoyés, même en mode `include_deleted` (voir `_iter_table_row_locations`)."""
     if num_row_offsets == 0:
         return []
-    num_groups = (num_row_offsets - 1) // ROW_GROUP_MAX_ROWS + 1
+    num_groups = _num_row_groups(num_row_offsets)
     results: list[RowLocation] = []
     for g in range(num_groups):
         group_end = page_start + len_page - ROW_GROUP_SIZE * g
         presence_addr = group_end - 4
-        for k in range(ROW_GROUP_MAX_ROWS):
+        nb_dans_ce_groupe = min(ROW_GROUP_MAX_ROWS, num_row_offsets - g * ROW_GROUP_MAX_ROWS)
+        for k in range(nb_dans_ce_groupe):
             ofs_addr = group_end - 6 - 2 * k
             (row_offset,) = struct.unpack_from("<H", buf, ofs_addr)
             results.append(
@@ -204,6 +219,164 @@ def _adjust_num_rows_valid(buf: bytearray, page_start: int, delta: int) -> None:
 
 def _mark_page_contains_deleted(buf: bytearray, page_start: int) -> None:
     buf[page_start + 0x1B] |= 0x10  # Bit D (deleted), voir doc du format.
+
+
+def _encode_device_sql_string(s: str) -> bytes:
+    """Encode une chaîne au format DeviceSQL (inverse de `_read_device_sql_string`).
+
+    Utilise la forme courte ASCII quand c'est possible (<= 126 octets),
+    sinon la forme longue ASCII, sinon UTF-16LE (pour les caractères
+    accentués : ni ASCII ni la forme courte ne peuvent les représenter).
+    """
+    try:
+        data = s.encode("ascii")
+    except UnicodeEncodeError:
+        data = s.encode("utf-16-le")
+        longueur_totale = len(data) + 4
+        if longueur_totale > 0xFFFF:
+            raise PdbFormatError("Nom trop long pour le format DeviceSQL.") from None
+        return struct.pack("<BHB", 0x90, longueur_totale, 0) + data
+
+    if len(data) <= 126:
+        return bytes([2 * len(data) + 3]) + data
+
+    longueur_totale = len(data) + 4
+    if longueur_totale > 0xFFFF:
+        raise PdbFormatError("Nom trop long pour le format DeviceSQL.")
+    return struct.pack("<BHB", 0x40, longueur_totale, 0) + data
+
+
+def _num_row_groups(num_row_offsets: int) -> int:
+    return (num_row_offsets - 1) // ROW_GROUP_MAX_ROWS + 1 if num_row_offsets else 0
+
+
+def _page_index_boundary(len_page: int, num_row_offsets: int) -> int:
+    """Adresse (relative au début de la page) avant laquelle le tas peut s'étendre
+    sans empiéter sur la zone d'index des lignes (qui grandit depuis la fin)."""
+    return len_page - ROW_GROUP_SIZE * _num_row_groups(num_row_offsets)
+
+
+def _set_row_counts(buf: bytearray, page_start: int, num_row_offsets: int, num_rows_valid: int) -> None:
+    if not (0 <= num_row_offsets <= 0x1FFF and 0 <= num_rows_valid <= 0x7FF):
+        raise PdbFormatError(f"Compteurs de lignes hors limites à la page {page_start:#x}.")
+    raw = (num_row_offsets & 0x1FFF) | ((num_rows_valid & 0x7FF) << 13)
+    buf[page_start + 0x18 : page_start + 0x1B] = raw.to_bytes(3, "little")
+
+
+def _init_page_bytes(len_page: int, page_index: int, page_type: int, sequence: int) -> bytearray:
+    """Construit une page de données neuve et vide (0 ligne), prête à recevoir des insertions."""
+    page = bytearray(len_page)
+    struct.pack_into("<6I", page, 0, 0, page_index, page_type, page_index, sequence, 0)
+    _set_row_counts(page, 0, 0, 0)
+    page[0x1B] = 0x24  # Page de données, pas de ligne supprimée.
+    struct.pack_into("<HH", page, 0x1C, len_page - HEAP_START, 0)  # free_size, used_size
+    struct.pack_into("<HHHH", page, 0x20, 0, 0, 0, 0)
+    return page
+
+
+def _allouer_nouvelle_page(buf: bytearray, header: FileHeader, page_type: int) -> int:
+    """Ajoute une page neuve à la fin du fichier et renvoie son index."""
+    nouvel_index = len(buf) // header.len_page
+    sequence_pour_la_page = header.sequence
+    header.sequence += 1  # seq_db est incrémenté après avoir servi à la page (voir doc du format).
+    buf.extend(_init_page_bytes(header.len_page, nouvel_index, page_type, sequence_pour_la_page))
+    struct.pack_into("<I", buf, 0x0C, nouvel_index + 1)  # next_unused_page : informationnel, tenu à jour par sécurité.
+    struct.pack_into("<I", buf, 0x14, header.sequence)
+    return nouvel_index
+
+
+def _mettre_a_jour_pointeur_table(buf: bytearray, header: FileHeader, table_index: int) -> None:
+    """Réécrit dans le fichier le pointeur de table (first_page/last_page) après modification en mémoire."""
+    table = header.tables[table_index]
+    offset = 0x1C + 16 * table_index
+    struct.pack_into("<4I", buf, offset, table.type, table.empty_candidate, table.first_page, table.last_page)
+
+
+def _inserer_ligne(buf: bytearray, header: FileHeader, table_index: int, row_bytes: bytes) -> RowLocation:
+    """Ajoute `row_bytes` comme nouvelle ligne à la fin d'une table (allocation en pile,
+    jamais de réutilisation des trous laissés par des suppressions — comme Rekordbox
+    lui-même, voir la doc du format).
+
+    Alloue une nouvelle page si la dernière page de la table est pleine, ou si elle
+    n'est encore qu'une page d'index vide (table qui n'a jamais reçu de ligne).
+    """
+    table = header.tables[table_index]
+    page_index = table.last_page
+    page_start = page_index * header.len_page
+    page = _parse_page_header(buf, page_start)
+
+    if page["is_index_page"]:
+        num_row_offsets = 0
+        num_rows_valid = 0
+        used_size = 0
+    else:
+        num_row_offsets = page["num_row_offsets"]
+        num_rows_valid = page["num_rows_valid"]
+        (used_size,) = struct.unpack_from("<H", buf, page_start + 0x1E)
+
+    nouveau_num_row_offsets = num_row_offsets + 1
+    limite = _page_index_boundary(header.len_page, nouveau_num_row_offsets)
+    espace_necessaire = HEAP_START + used_size + len(row_bytes)
+
+    if page["is_index_page"] or espace_necessaire > limite:
+        # Espace insuffisant (ou pas encore de page de données) : on en crée une nouvelle.
+        nouvel_index = _allouer_nouvelle_page(buf, header, table.type)
+        ancien_last_page_start = page_start
+        struct.pack_into("<I", buf, ancien_last_page_start + 0x0C, nouvel_index)  # next_page de l'ancienne dernière page
+        table.last_page = nouvel_index
+        _mettre_a_jour_pointeur_table(buf, header, table_index)
+
+        page_index = nouvel_index
+        page_start = page_index * header.len_page
+        num_row_offsets = 0
+        num_rows_valid = 0
+        used_size = 0
+        nouveau_num_row_offsets = 1
+        limite = _page_index_boundary(header.len_page, nouveau_num_row_offsets)
+
+    # Écriture de la ligne dans le tas, à la suite des données déjà présentes.
+    row_addr = page_start + HEAP_START + used_size
+    buf[row_addr : row_addr + len(row_bytes)] = row_bytes
+
+    group_index = num_row_offsets // ROW_GROUP_MAX_ROWS
+    subindex = num_row_offsets % ROW_GROUP_MAX_ROWS
+    group_end = page_start + header.len_page - ROW_GROUP_SIZE * group_index
+    if subindex == 0:
+        # Nouveau groupe : on l'initialise proprement (offsets à zéro, rien de présent).
+        buf[group_end - ROW_GROUP_SIZE : group_end] = bytes(ROW_GROUP_SIZE)
+
+    ofs_addr = group_end - 6 - 2 * subindex
+    struct.pack_into("<H", buf, ofs_addr, used_size)
+    presence_addr = group_end - 4
+    (flags,) = struct.unpack_from("<H", buf, presence_addr)
+    flags |= 1 << subindex
+    struct.pack_into("<H", buf, presence_addr, flags)
+
+    nouveau_used_size = used_size + len(row_bytes)
+    nouveau_free_size = limite - (HEAP_START + nouveau_used_size)
+    _set_row_counts(buf, page_start, nouveau_num_row_offsets, num_rows_valid + 1)
+    struct.pack_into("<HH", buf, page_start + 0x1C, max(nouveau_free_size, 0), nouveau_used_size)
+
+    return RowLocation(page_start=page_start, presence_addr=presence_addr, bit_index=subindex, row_addr=row_addr)
+
+
+def _generer_nouvel_id(buf: bytes, header: FileHeader, table_type: TableType, lire_id) -> int:
+    """Renvoie max(id existants, y compris supprimés) + 1, ou 1 si la table est vide.
+
+    On inclut les lignes supprimées dans le calcul pour ne jamais réutiliser un ID,
+    même si la ligne qui le portait a depuis été retirée.
+    """
+    table = None
+    for t in header.tables:
+        if t.type == table_type:
+            table = t
+            break
+    if table is None:
+        return 1
+    max_id = 0
+    for loc in _iter_table_row_locations(buf, header, table, include_deleted=True):
+        max_id = max(max_id, lire_id(buf, loc.row_addr))
+    return max_id + 1
 
 
 def _parse_page_header(buf: bytes, page_start: int) -> dict[str, Any]:
@@ -283,13 +456,56 @@ def _parse_playlist_entry_row(buf: bytes, addr: int) -> PlaylistEntryRow:
     return PlaylistEntryRow(entry_index=entry_index, track_id=str(track_id), playlist_id=str(playlist_id))
 
 
+# Offset (relatif au début d'une ligne `tracks`) où commence le tableau des 21
+# pointeurs de chaînes. La documentation en prose de la spec (exports.adoc)
+# affirme que c'est 0x64, mais c'est une erreur : elle oublie que "file_type"
+# (2 octets) et le champ mystère valant toujours 3 (2 octets) suivent
+# immédiatement `rating`, sans les 6 octets d'écart qu'elle sous-entend. La
+# spec Kaitai Struct (rekordbox_pdb.ksy), elle, est cohérente avec ce calcul,
+# et 0x5E a été vérifié directement sur une vraie base export.pdb (le champ
+# juste avant, à 0x5C, vaut bien 3 comme attendu, et les décalages obtenus à
+# partir de 0x5E pointent vers du texte cohérent, alors que 0x64 pointait
+# n'importe où dans le tas, avec des résultats qui ressemblaient par hasard à
+# du texte).
+TRACK_OFS_STRINGS_OFFSET = 0x5E
+
+
 def _parse_track_title(buf: bytes, addr: int) -> tuple[str, str]:
     """Renvoie (id, titre) d'une ligne de la table tracks (on ignore le reste pour l'instant)."""
     (id_,) = struct.unpack_from("<I", buf, addr + 0x48)
-    ofs_strings = struct.unpack_from("<21H", buf, addr + 0x64)
+    ofs_strings = struct.unpack_from("<21H", buf, addr + TRACK_OFS_STRINGS_OFFSET)
     title_offset = ofs_strings[17]
     title = _read_device_sql_string(buf, addr + title_offset) if title_offset else ""
     return str(id_), title
+
+
+def _parse_track_info(buf: bytes, addr: int) -> TrackInfo:
+    """Renvoie les métadonnées d'une piste utiles au tri semi-automatique."""
+    (key_id,) = struct.unpack_from("<I", buf, addr + 0x20)
+    (tempo,) = struct.unpack_from("<I", buf, addr + 0x38)
+    (genre_id,) = struct.unpack_from("<I", buf, addr + 0x3C)
+    (id_,) = struct.unpack_from("<I", buf, addr + 0x48)
+    ofs_strings = struct.unpack_from("<21H", buf, addr + TRACK_OFS_STRINGS_OFFSET)
+    title = _read_device_sql_string(buf, addr + ofs_strings[17]) if ofs_strings[17] else ""
+    filename = _read_device_sql_string(buf, addr + ofs_strings[19]) if ofs_strings[19] else ""
+    return TrackInfo(
+        id=str(id_),
+        title=title,
+        genre_id=str(genre_id),
+        key_id=str(key_id),
+        tempo_bpm=tempo / 100,
+        filename=filename,
+    )
+
+
+def _parse_genre_or_label_row(buf: bytes, addr: int) -> tuple[str, str]:
+    (id_,) = struct.unpack_from("<I", buf, addr)
+    return str(id_), _read_device_sql_string(buf, addr + 4)
+
+
+def _parse_key_row(buf: bytes, addr: int) -> tuple[str, str]:
+    (id_,) = struct.unpack_from("<I", buf, addr)
+    return str(id_), _read_device_sql_string(buf, addr + 8)
 
 
 class PdbFile:
@@ -313,6 +529,12 @@ class PdbFile:
                 return t
         return None
 
+    def _table_index(self, table_type: TableType) -> int:
+        for i, t in enumerate(self.header.tables):
+            if t.type == table_type:
+                return i
+        raise PdbFormatError(f"Aucune table de type {table_type.name} dans ce fichier.")
+
     def playlist_tree_rows(self) -> list[PlaylistTreeRow]:
         table = self._table(TableType.PLAYLIST_TREE)
         if table is None:
@@ -335,6 +557,26 @@ class PdbFile:
             track_id, title = _parse_track_title(self._buf, addr)
             titles[track_id] = title
         return titles
+
+    def track_info(self) -> dict[str, TrackInfo]:
+        """Renvoie {track_id: TrackInfo} avec les métadonnées utiles au tri semi-automatique."""
+        table = self._table(TableType.TRACKS)
+        if table is None:
+            return {}
+        infos = (_parse_track_info(self._buf, addr) for addr in _iter_table_rows(self._buf, self.header, table))
+        return {info.id: info for info in infos}
+
+    def genre_names(self) -> dict[str, str]:
+        table = self._table(TableType.GENRES)
+        if table is None:
+            return {}
+        return dict(_parse_genre_or_label_row(self._buf, addr) for addr in _iter_table_rows(self._buf, self.header, table))
+
+    def key_names(self) -> dict[str, str]:
+        table = self._table(TableType.KEYS)
+        if table is None:
+            return {}
+        return dict(_parse_key_row(self._buf, addr) for addr in _iter_table_rows(self._buf, self.header, table))
 
     def supprimer_playlist(self, playlist_id: str) -> int:
         """Marque une playlist (non-dossier) et tous ses morceaux comme supprimés.
@@ -392,6 +634,72 @@ class PdbFile:
                 _mark_page_contains_deleted(self._buf, loc.page_start)
                 return True
         return False
+
+    def creer_playlist(self, nom: str, parent_id: str = "0", is_folder: bool = False) -> str:
+        """Crée une nouvelle playlist (ou un dossier) et renvoie son nouvel id.
+
+        `parent_id="0"` place la playlist à la racine. Contrairement aux
+        suppressions, cette opération alloue de nouvelles lignes dans le
+        fichier (et potentiellement une nouvelle page) : voir `_inserer_ligne`.
+        """
+        table_index = self._table_index(TableType.PLAYLIST_TREE)
+        table = self.header.tables[table_index]
+
+        if parent_id != "0":
+            parents = _iter_table_row_locations(self._buf, self.header, table)
+            if not any(_parse_playlist_tree_row(self._buf, loc.row_addr).id == parent_id for loc in parents):
+                raise PdbFormatError(f"Dossier parent introuvable (id={parent_id}).")
+
+        nouvel_id = _generer_nouvel_id(
+            self._buf, self.header, TableType.PLAYLIST_TREE, lambda buf, addr: struct.unpack_from("<I", buf, addr + 0xC)[0]
+        )
+
+        row_bytes = struct.pack("<5I", int(parent_id), 0, 0, nouvel_id, 1 if is_folder else 0)
+        row_bytes += _encode_device_sql_string(nom)
+
+        _inserer_ligne(self._buf, self.header, table_index, row_bytes)
+        return str(nouvel_id)
+
+    def ajouter_morceau(self, playlist_id: str, track_id: str) -> int:
+        """Ajoute un morceau (déjà présent dans la base) à la fin d'une playlist.
+
+        Renvoie l'entry_index attribué. Lève PdbFormatError si la playlist ou
+        le morceau n'existent pas, ou si le morceau est déjà dans la playlist
+        (pas de doublon : correspond à la sémantique « ajouter/retirer » du
+        cahier des charges, pas à une liste pouvant contenir plusieurs fois
+        le même morceau).
+        """
+        tree_table = self._table(TableType.PLAYLIST_TREE)
+        if tree_table is None or not any(
+            _parse_playlist_tree_row(self._buf, loc.row_addr).id == playlist_id
+            for loc in _iter_table_row_locations(self._buf, self.header, tree_table)
+        ):
+            raise PdbFormatError(f"Playlist introuvable (id={playlist_id}).")
+
+        tracks_table = self._table(TableType.TRACKS)
+        if tracks_table is not None:
+            connu = any(
+                struct.unpack_from("<I", self._buf, loc.row_addr + 0x48)[0] == int(track_id)
+                for loc in _iter_table_row_locations(self._buf, self.header, tracks_table)
+            )
+            if not connu:
+                raise PdbFormatError(f"Morceau introuvable dans la base (id={track_id}).")
+
+        entries_table_index = self._table_index(TableType.PLAYLIST_ENTRIES)
+        entries_table = self.header.tables[entries_table_index]
+
+        max_entry_index = -1
+        for loc in _iter_table_row_locations(self._buf, self.header, entries_table):
+            entry = _parse_playlist_entry_row(self._buf, loc.row_addr)
+            if entry.playlist_id == playlist_id:
+                if entry.track_id == track_id:
+                    raise PdbFormatError(f"Le morceau {track_id} est déjà dans la playlist {playlist_id}.")
+                max_entry_index = max(max_entry_index, entry.entry_index)
+
+        nouvel_entry_index = max_entry_index + 1
+        row_bytes = struct.pack("<3I", nouvel_entry_index, int(track_id), int(playlist_id))
+        _inserer_ligne(self._buf, self.header, entries_table_index, row_bytes)
+        return nouvel_entry_index
 
     def enregistrer(self, chemin: str | Path | None = None) -> None:
         """Écrit le contenu (éventuellement modifié) sur le disque.

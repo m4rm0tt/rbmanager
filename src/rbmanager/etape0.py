@@ -44,6 +44,7 @@ EXIT_FORMAT_NON_SUPPORTE = 5   # Opération d'écriture demandée sur un format 
 EXIT_PLAYLIST_INTROUVABLE = 6
 EXIT_OPERATION_NON_SUPPORTEE = 7  # Ex : suppression d'un dossier
 EXIT_ASSOCIATION_INTROUVABLE = 8  # Le morceau n'était pas dans la playlist visée
+EXIT_DEJA_PRESENT = 9          # Le morceau est déjà dans la playlist visée (add-track)
 EXIT_ERREUR_INCONNUE = 10      # Tout autre échec imprévu
 
 

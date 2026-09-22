@@ -4,24 +4,39 @@ Logiciel portable pour gérer les playlists Rekordbox directement sur une
 clé USB exportée — sans installation, pilotable en CLI par un humain ou
 par un agent (Cowork).
 
-## État actuel du projet
+## État actuel du projet : v1 complète
 
-Au-delà de l'étape 0 (validation de la connexion, toujours disponible via
-`rbmanager-etape0.exe`), le projet dispose maintenant d'un exécutable
-principal `rbmanager.exe` avec :
+L'exécutable principal `rbmanager.exe` couvre l'ensemble du cahier des
+charges v1 :
 - **Lecture** : lister les playlists (`list-playlists`), afficher le
   contenu d'une playlist (`show-playlist`).
-- **Écriture** (format historique DeviceSQL uniquement, voir plus bas) :
-  retirer un morceau d'une playlist (`remove-track`), supprimer une
-  playlist (`delete-playlist`). Toujours précédée d'une sauvegarde
-  automatique horodatée.
+- **Écriture** (format historique DeviceSQL uniquement, voir plus bas),
+  avec sauvegarde automatique horodatée avant chaque modification :
+  créer une playlist ou un dossier (`create-playlist`), supprimer une
+  playlist (`delete-playlist`), ajouter (`add-track`) ou retirer
+  (`remove-track`) un morceau d'une playlist.
+- **Tri semi-automatique à l'import** (`suggest-playlist`) : suggère une
+  ou plusieurs playlists existantes pour un morceau, à partir de son
+  genre, son BPM et son nom de fichier — ne modifie jamais rien tout
+  seul, c'est une suggestion à confirmer.
 - Un **menu interactif en texte** (lancé automatiquement sans argument,
   y compris en double-cliquant sur l'exécutable) pour un usage humain, en
-  plus du mode non-interactif pour un agent/script.
+  plus du mode non-interactif pour un agent/script — les deux appellent
+  exactement le même code.
+- Un **journal horodaté** (`logs/rbmanager.log` sur la clé) de toutes les
+  actions effectuées, succès comme échecs.
 
-Pas encore disponibles : création de playlist, ajout de morceau, tri
-semi-automatique à l'import (nécessitent d'allouer de nouvelles lignes
-dans le fichier, plus délicat — voir `docs/cli-reference.md`).
+Le diagnostic en lecture seule de l'étape 0 reste disponible séparément
+via `rbmanager-etape0.exe`.
+
+**Validé sur une vraie base Rekordbox** (742 morceaux, playlists jusqu'à
+701 morceaux, tables réparties sur plus de 180 pages) : lecture des vraies
+playlists/titres/métadonnées, et cycle complet créer → ajouter → retirer
+→ supprimer testé sur une copie sans aucun risque pour la clé d'origine.
+
+Limitation assumée : la suppression de **dossiers** (pas des playlists
+simples) n'est pas prise en charge, pour limiter le risque (suppression
+récursive plus complexe) — voir `docs/cli-reference.md`.
 
 ## ⚠️ Avertissements importants
 
@@ -33,7 +48,9 @@ dans le fichier, plus délicat — voir `docs/cli-reference.md`).
   « Deux formats d'export différents » plus bas. Sur le format
   SQLCipher (Device Library Plus), seule la lecture est disponible.
 - Chaque écriture fait une sauvegarde automatique horodatée dans
-  `backups/` à la racine de la clé, avant toute modification.
+  `backups/` à la racine de la clé, avant toute modification. Chaque
+  action (lecture ou écriture) est aussi consignée dans
+  `logs/rbmanager.log` à la racine de la clé.
 - **Teste toujours une nouvelle version sur une playlist jetable** créée
   exprès, jamais directement sur tes vraies playlists, tant que tu n'as
   pas confirmé que ça fonctionne comme attendu chez toi.
@@ -44,8 +61,9 @@ dans le fichier, plus délicat — voir `docs/cli-reference.md`).
 2. Décompresse le zip livré — aucune installation requise.
 3. Double-clique sur `rbmanager.exe` (ou lance-le depuis un terminal sans
    argument) : un menu en texte s'ouvre, te demande le chemin de la clé,
-   puis propose les actions disponibles (lister, afficher, retirer un
-   morceau, supprimer une playlist).
+   puis propose les actions disponibles (lister, afficher, créer,
+   ajouter/retirer un morceau, supprimer une playlist, suggérer une
+   playlist pour un morceau).
 
 Pour le diagnostic en lecture seule seul (étape 0), ou en ligne de
 commande directe :
@@ -125,22 +143,16 @@ Rekordbox exporte en réalité deux formats binaires différents sous le nom
 
 Le script détecte automatiquement lequel des deux formats est présent sur
 ta clé (champ `format_detecte` dans la sortie JSON) — tu n'as rien à
-préciser.
-
-## Pourquoi cette étape avant tout le reste ?
-
-Le format historique n'étant pas officiellement documenté par Pioneer, et
-aucune bibliothèque existante ne le prenant en charge pour l'écriture,
-valider cette étape 0 sur ta propre clé est indispensable avant de
-construire le reste du projet (v1 : création/suppression/modification de
-playlists), qui devra écrire dans ce format avec des précautions
-particulières (sauvegarde automatique systématique).
+préciser. Voir `docs/pdb-format.md` pour le détail technique du format
+historique (structure des pages, calcul des offsets, sources utilisées).
 
 ## Suite du projet
 
-Voir le cahier des charges complet dans les issues/discussions du dépôt
-pour le détail des versions v1 (CRUD playlists + tri semi-automatique),
-v1.5 (skill Claude) et v2 (import de morceaux).
+v1 est complète. Restent, dans l'ordre du cahier des charges initial :
+- **v1.5** : skill Claude documentant ces commandes pour un pilotage en
+  langage naturel.
+- **v2** : import de nouveaux morceaux audio vers la clé, gestion des
+  métadonnées (si le temps le permet).
 
 ## Développement
 

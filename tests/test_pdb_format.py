@@ -148,9 +148,9 @@ def test_track_title() -> None:
     addr = 10
     struct.pack_into("<I", buf, addr + 0x48, 555)
     ofs = [0] * 21
-    title_rel_offset = 0x64 + 21 * 2
+    title_rel_offset = 0x5E + 21 * 2
     ofs[17] = title_rel_offset
-    struct.pack_into("<21H", buf, addr + 0x64, *ofs)
+    struct.pack_into("<21H", buf, addr + 0x5E, *ofs)
     name_bytes = _device_sql_short_ascii("Ma Piste Test")
     buf[addr + title_rel_offset : addr + title_rel_offset + len(name_bytes)] = name_bytes
 

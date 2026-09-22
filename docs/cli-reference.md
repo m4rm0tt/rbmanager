@@ -173,20 +173,137 @@ sauvegarde automatique que `delete-playlist`.
 | `--usb` / `--db-path` | Oui (un des deux) | Comme pour `rbmanager-etape0`. |
 | `--format` | Non | `text` ou `json`. |
 
+## `rbmanager create-playlist`
+
+Crée une nouvelle playlist, ou un dossier. **Écrit sur la clé** (avec
+sauvegarde automatique). Contrairement à `delete-playlist`/`remove-track`,
+cette commande alloue de nouvelles lignes dans le fichier (et
+potentiellement une nouvelle page si celle en cours est pleine) — voir
+`docs/pdb-format.md` pour le détail de cette allocation.
+
+| Argument | Obligatoire | Description |
+|----------|-------------|--------------|
+| `--name` | Oui | Nom de la playlist ou du dossier. |
+| `--parent-id` | Non (défaut `0`, la racine) | ID du dossier parent, pour créer une sous-playlist/sous-dossier. |
+| `--dossier` | Non | Créer un dossier plutôt qu'une playlist. |
+| `--usb` / `--db-path` | Oui (un des deux) | Comme pour `list-playlists`. |
+| `--format` | Non | `text` ou `json`. |
+
+Sortie JSON (succès) :
+```json
+{
+  "succes": true,
+  "message": "Playlist « Nouvelle Playlist » créé(e) (id=42).",
+  "playlist_id": "42",
+  "backup": "E:\\backups\\export_pdb_20260922_090111.pdb"
+}
+```
+
+Les identifiants sont attribués par rbmanager (max des ids existants + 1,
+y compris ceux des playlists supprimées, pour ne jamais réutiliser un id)
+: ne pas essayer de choisir l'id vous-même.
+
+## `rbmanager add-track`
+
+Ajoute un morceau (déjà présent dans la table `tracks` de la base) à la
+fin d'une playlist existante. **Écrit sur la clé** (avec sauvegarde
+automatique). Refuse d'ajouter un doublon (le même morceau deux fois dans
+la même playlist).
+
+| Argument | Obligatoire | Description |
+|----------|-------------|--------------|
+| `--playlist-id` | Oui | ID de la playlist cible. |
+| `--track-id` | Oui | ID du morceau à ajouter. |
+| `--usb` / `--db-path` | Oui (un des deux) | Comme pour `list-playlists`. |
+| `--format` | Non | `text` ou `json`. |
+
+Sortie JSON (succès) :
+```json
+{
+  "succes": true,
+  "message": "Morceau 444 ajouté à la playlist 10.",
+  "playlist_id": "10",
+  "track_id": "444",
+  "entry_index": 3,
+  "backup": "E:\\backups\\export_pdb_20260922_090046.pdb"
+}
+```
+
+## `rbmanager suggest-playlist`
+
+Tri semi-automatique à l'import : propose une ou plusieurs playlists
+existantes pour un morceau, à partir de son genre, son BPM et le nom de
+son fichier audio, comparés à ceux des morceaux déjà présents dans chaque
+playlist. **Ne modifie jamais rien** — c'est une suggestion, à confirmer
+ensuite via `add-track` (ou via le menu interactif, qui propose de le
+faire directement). Voir `rbmanager.suggest` pour le détail de
+l'heuristique (transparente : chaque suggestion explique sa raison).
+
+| Argument | Obligatoire | Description |
+|----------|-------------|--------------|
+| `--track-id` | Oui | ID du morceau à trier. |
+| `--usb` / `--db-path` | Oui (un des deux) | Comme pour `list-playlists`. |
+| `--format` | Non | `text` ou `json`. |
+
+Sortie JSON :
+```json
+{
+  "succes": true,
+  "track_id": "999",
+  "suggestions": [
+    {
+      "playlist_id": "10",
+      "nom": "Speed Garage Sets",
+      "score": 1.85,
+      "raisons": [
+        "genre « Speed Garage » partagé par 100% des morceaux de la playlist",
+        "BPM proche de la moyenne de la playlist (130, écart de 1.0)"
+      ]
+    }
+  ],
+  "nom_suggere": null
+}
+```
+
+Si `suggestions` est vide, `nom_suggere` peut contenir un nom de playlist
+suggéré (basé sur le genre du morceau) pour en créer une nouvelle — ou
+`null` si pas assez d'information.
+
+### Exemple d'enchaînement pour un agent (tri semi-automatique)
+
+```bash
+# 1. Demander une suggestion (ne modifie rien)
+rbmanager.exe suggest-playlist --usb E:\ --track-id 999 --format json
+# 2. Si "suggestions" contient un résultat pertinent, confirmer avec l'utilisateur puis :
+rbmanager.exe add-track --usb E:\ --playlist-id 10 --track-id 999 --format json
+# 3. Si "suggestions" est vide et "nom_suggere" est renseigné, proposer de créer la playlist :
+rbmanager.exe create-playlist --usb E:\ --name "Ambient" --format json
+rbmanager.exe add-track --usb E:\ --playlist-id <id renvoyé> --track-id 999 --format json
+```
+
 ### Codes de sortie spécifiques à `rbmanager`
 
 | Code | Signification | Commandes concernées |
 |------|----------------|------------------------|
-| 5 | Format non supporté en écriture (SQLCipher / Device Library Plus) | delete-playlist, remove-track |
-| 6 | Playlist introuvable | show-playlist, delete-playlist |
+| 5 | Format non supporté en écriture (SQLCipher / Device Library Plus) | delete-playlist, remove-track, create-playlist, add-track, suggest-playlist |
+| 6 | Playlist, dossier parent ou morceau introuvable | show-playlist, delete-playlist, create-playlist, add-track, suggest-playlist |
 | 7 | Opération non supportée (ex : suppression d'un dossier) | delete-playlist |
 | 8 | Le morceau n'était pas dans la playlist visée | remove-track |
+| 9 | Le morceau est déjà dans la playlist visée | add-track |
 
 Les codes 0, 2, 3, 4, 10 ont le même sens que pour `rbmanager-etape0`.
 
-## Commandes à venir (v1, non encore implémentées)
+## Journal des actions
 
-`create-playlist`, `add-track`, `suggest-playlist`. Ces opérations
-demandent d'allouer de nouvelles lignes dans le fichier (plus délicat que
-les bascules de bit de présence utilisées par les commandes
-ci-dessus) et n'ont pas encore été implémentées ni testées.
+Chaque commande (lecture et écriture) ajoute une ligne horodatée dans
+`<racine de la clé>/logs/rbmanager.log`, y compris en cas d'échec. Ce
+fichier permet de suivre après coup ce qui a été fait sur la clé, y
+compris par un agent en mode non-interactif.
+
+## Limitations connues (au-delà de la v1)
+
+- La suppression de **dossiers** n'est pas prise en charge (seulement les
+  playlists simples) : la suppression récursive d'une hiérarchie entière
+  est un cas plus risqué qui n'a pas été jugé prioritaire pour la v1.
+- Les commandes d'écriture ne fonctionnent que sur le format historique
+  DeviceSQL, pas sur le format SQLCipher (Device Library Plus).
