@@ -99,6 +99,7 @@ class TrackInfo:
     title: str
     genre_id: str
     key_id: str
+    artist_id: str
     tempo_bpm: float
     filename: str
 
@@ -469,6 +470,29 @@ def _parse_playlist_entry_row(buf: bytes, addr: int) -> PlaylistEntryRow:
 # du texte).
 TRACK_OFS_STRINGS_OFFSET = 0x5E
 
+# Offset (relatif au début d'une ligne `tracks`) du champ artist_id (u4),
+# qui référence une ligne de la table `artists`. Vérifié par recoupement
+# avec la spec Kaitai communautaire (rekordbox_pdb.ksy) : composer_id
+# (+0x0C), artwork_id (+0x1C), key_id (+0x20, déjà vérifié ci-dessus sur
+# une vraie base), original_artist_id (+0x24), label_id (+0x28),
+# remixer_id (+0x2C), bitrate (+0x30), track_number (+0x34), tempo
+# (+0x38, déjà vérifié), genre_id (+0x3C, déjà vérifié), album_id (+0x40),
+# artist_id (+0x44), id (+0x48, déjà vérifié) — la cohérence des trois
+# offsets déjà validés sur une vraie base (key_id/tempo/genre_id/id) avec
+# cette spec confirme la position des champs non encore exploités.
+TRACK_ARTIST_ID_OFFSET = 0x44
+
+# Offsets (relatifs au début d'une ligne `artists`) : cf. artist_row dans
+# rekordbox_pdb.ksy. subtype (u2, +0x00) vaut normalement 0x60 ; s'il vaut
+# 0x64 (bit 0x04 positionné), le nom est trop loin (>0xFF octets) pour
+# tenir dans l'offset court `ofs_name_near` (u1, +0x09) et il faut lire
+# `ofs_name_far` (u2, +0x0A) à la place — cas rare pour un nom d'artiste,
+# mais géré pour rester correct sur des noms atypiques (collectifs, etc.).
+ARTIST_ID_OFFSET = 0x04
+ARTIST_OFS_NAME_NEAR_OFFSET = 0x09
+ARTIST_OFS_NAME_FAR_OFFSET = 0x0A
+ARTIST_SUBTYPE_LONG_NAME_BIT = 0x04
+
 
 def _parse_track_title(buf: bytes, addr: int) -> tuple[str, str]:
     """Renvoie (id, titre) d'une ligne de la table tracks (on ignore le reste pour l'instant)."""
@@ -480,8 +504,9 @@ def _parse_track_title(buf: bytes, addr: int) -> tuple[str, str]:
 
 
 def _parse_track_info(buf: bytes, addr: int) -> TrackInfo:
-    """Renvoie les métadonnées d'une piste utiles au tri semi-automatique."""
+    """Renvoie les métadonnées d'une piste utiles au tri semi-automatique et à la classification par artiste."""
     (key_id,) = struct.unpack_from("<I", buf, addr + 0x20)
+    (artist_id,) = struct.unpack_from("<I", buf, addr + TRACK_ARTIST_ID_OFFSET)
     (tempo,) = struct.unpack_from("<I", buf, addr + 0x38)
     (genre_id,) = struct.unpack_from("<I", buf, addr + 0x3C)
     (id_,) = struct.unpack_from("<I", buf, addr + 0x48)
@@ -493,6 +518,7 @@ def _parse_track_info(buf: bytes, addr: int) -> TrackInfo:
         title=title,
         genre_id=str(genre_id),
         key_id=str(key_id),
+        artist_id=str(artist_id),
         tempo_bpm=tempo / 100,
         filename=filename,
     )
@@ -506,6 +532,25 @@ def _parse_genre_or_label_row(buf: bytes, addr: int) -> tuple[str, str]:
 def _parse_key_row(buf: bytes, addr: int) -> tuple[str, str]:
     (id_,) = struct.unpack_from("<I", buf, addr)
     return str(id_), _read_device_sql_string(buf, addr + 8)
+
+
+def _parse_artist_row(buf: bytes, addr: int) -> tuple[str, str]:
+    """Renvoie (id, nom) d'une ligne de la table `artists`.
+
+    Contrairement à `genre`/`label`/`key` (id puis chaîne directement à un
+    offset fixe), le nom d'artiste est référencé par un offset variable
+    (`ofs_name_near`, ou `ofs_name_far` si le nom est trop loin dans le
+    tas pour tenir sur un seul octet) — voir les constantes ARTIST_*
+    ci-dessus, dérivées de la spec Kaitai communautaire.
+    """
+    (subtype,) = struct.unpack_from("<H", buf, addr)
+    (id_,) = struct.unpack_from("<I", buf, addr + ARTIST_ID_OFFSET)
+    if subtype & ARTIST_SUBTYPE_LONG_NAME_BIT:
+        (name_offset,) = struct.unpack_from("<H", buf, addr + ARTIST_OFS_NAME_FAR_OFFSET)
+    else:
+        name_offset = buf[addr + ARTIST_OFS_NAME_NEAR_OFFSET]
+    name = _read_device_sql_string(buf, addr + name_offset) if name_offset else ""
+    return str(id_), name
 
 
 class PdbFile:
@@ -577,6 +622,19 @@ class PdbFile:
         if table is None:
             return {}
         return dict(_parse_key_row(self._buf, addr) for addr in _iter_table_rows(self._buf, self.header, table))
+
+    def artist_names(self) -> dict[str, str]:
+        """Renvoie {artist_id: nom} pour tous les artistes de la base.
+
+        À croiser avec `TrackInfo.artist_id` (voir `track_info`) pour
+        obtenir l'artiste de chaque morceau — c'est la base de la
+        classification par artiste (un artiste id="0" signifie "aucun
+        artiste renseigné" et n'a pas de ligne correspondante).
+        """
+        table = self._table(TableType.ARTISTS)
+        if table is None:
+            return {}
+        return dict(_parse_artist_row(self._buf, addr) for addr in _iter_table_rows(self._buf, self.header, table))
 
     def supprimer_playlist(self, playlist_id: str) -> int:
         """Marque une playlist (non-dossier) et tous ses morceaux comme supprimés.

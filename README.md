@@ -146,6 +146,16 @@ ta clé (champ `format_detecte` dans la sortie JSON) — tu n'as rien à
 préciser. Voir `docs/pdb-format.md` pour le détail technique du format
 historique (structure des pages, calcul des offsets, sources utilisées).
 
+## SaaS MVP : organisation automatique par artiste
+
+Un MVP web s'appuyant sur ce dépôt vit dans `saas/` : upload d'un
+`export.pdb`, classification automatique des morceaux par ARTISTE (pas
+par morceau) via une base de connaissance persistante et partagée,
+aperçu du plan d'organisation, confirmation explicite, puis création
+réelle des playlists via ce même `rbmanager`. Voir `PROJECT_CONTEXT.md`
+et `ARCHITECTURE.md` à la racine du dépôt pour le cahier des charges et
+la conception technique, et `saas/README.md` pour le lancer en local.
+
 ## Suite du projet
 
 v1 est complète. Restent, dans l'ordre du cahier des charges initial :

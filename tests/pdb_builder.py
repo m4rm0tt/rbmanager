@@ -28,6 +28,17 @@ def ligne_key(id_: int, nom: str) -> bytes:
     return struct.pack("<II", id_, id_) + sql_short(nom)
 
 
+def ligne_artist(id_: int, nom: str) -> bytes:
+    """Construit une ligne `artists` (subtype=0x60, nom toujours en offset court `ofs_name_near`,
+    suffisant pour des noms d'artiste réalistes — voir _parse_artist_row pour le cas long)."""
+    fixe = bytearray(10)  # 0x00 subtype, 0x02 index_shift, 0x04 id, 0x08 unknown, 0x09 ofs_name_near
+    struct.pack_into("<H", fixe, 0x00, 0x60)
+    struct.pack_into("<I", fixe, 0x04, id_)
+    fixe[0x08] = 0x03
+    fixe[0x09] = len(fixe)
+    return bytes(fixe) + sql_short(nom)
+
+
 def ligne_playlist_tree(id_: int, nom: str, parent_id: int = 0, is_folder: int = 0, sort_order: int = 0) -> bytes:
     return struct.pack("<5I", parent_id, 0, sort_order, id_, is_folder) + sql_short(nom)
 
@@ -36,13 +47,22 @@ def ligne_playlist_entry(entry_index: int, track_id: int, playlist_id: int) -> b
     return struct.pack("<3I", entry_index, track_id, playlist_id)
 
 
-def ligne_track(id_: int, titre: str, filename: str = "", genre_id: int = 0, key_id: int = 0, tempo_bpm: float = 0.0) -> bytes:
+def ligne_track(
+    id_: int,
+    titre: str,
+    filename: str = "",
+    genre_id: int = 0,
+    key_id: int = 0,
+    artist_id: int = 0,
+    tempo_bpm: float = 0.0,
+) -> bytes:
     """Construit une ligne `tracks` minimale (uniquement les champs utilisés par rbmanager)."""
     fixe = bytearray(0x88)  # 0x5E (champs fixes) + 21*2 (tableau d'offsets de strings) = 136
     struct.pack_into("<H", fixe, 0x00, 0x24)  # subtype
     struct.pack_into("<I", fixe, 0x20, key_id)
     struct.pack_into("<I", fixe, 0x38, round(tempo_bpm * 100))
     struct.pack_into("<I", fixe, 0x3C, genre_id)
+    struct.pack_into("<I", fixe, 0x44, artist_id)
     struct.pack_into("<I", fixe, 0x48, id_)
 
     titre_bytes = sql_short(titre) if titre else b""

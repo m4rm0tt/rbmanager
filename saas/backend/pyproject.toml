@@ -1,0 +1,9 @@
+[project]
+name = "dj-library-organizer-backend"
+version = "0.1.0"
+description = "MVP SaaS : organisation automatique de bibliothèque Rekordbox par classification d'artistes"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = [".", "../../src", "../../tests"]
+testpaths = ["tests"]

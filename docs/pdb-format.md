@@ -143,11 +143,21 @@ octet (`length_and_kind`) :
 - **`playlist_entries`** (12 octets, taille fixe) : `entry_index`(4)
   `track_id`(4) `playlist_id`(4).
 - **`tracks`** (voir `_parse_track_info`) : champs fixes jusqu'à l'octet
-  `0x5E` (`key_id`@0x20, `tempo`@0x38 en BPM×100, `genre_id`@0x3C,
-  `id`@0x48), puis un tableau de 21 offsets de chaînes à partir de
-  `0x5E` (indice 17 = titre, 19 = nom de fichier, 20 = chemin complet).
+  `0x5E` (`key_id`@0x20, `artist_id`@0x44, `tempo`@0x38 en BPM×100,
+  `genre_id`@0x3C, `id`@0x48), puis un tableau de 21 offsets de chaînes à
+  partir de `0x5E` (indice 17 = titre, 19 = nom de fichier, 20 = chemin
+  complet). `artist_id` référence une ligne de la table `artists` (0 si
+  aucun artiste renseigné) — c'est la base de la classification par
+  artiste (voir `PdbFile.artist_names()`).
 - **`genres`**/**`labels`** (identiques) : `id`(4) puis nom.
 - **`keys`** : `id`(4) `id2`(4, copie) puis nom.
+- **`artists`** (voir `_parse_artist_row`) : `subtype`(2) `index_shift`(2)
+  `id`(4) `unknown`(1, vaut toujours 0x03) `ofs_name_near`(1), le nom
+  étant à `row_addr + ofs_name_near` — SAUF si `subtype & 0x04`, auquel
+  cas le nom est trop loin pour un offset sur 1 octet et c'est
+  `ofs_name_far` (2 octets, à `row_addr + 0x0A`) qu'il faut utiliser à la
+  place. Contrairement à `genres`/`labels`/`keys`, le nom n'est donc
+  jamais à un offset fixe.
 
 ## Écriture : allocation en pile (bump allocator)
 
@@ -167,10 +177,10 @@ sûre du format, aucune réorganisation de données.
 
 ## Limitations connues de l'implémentation actuelle
 
-- Pas de gestion des chaînes "far offset" (pointeur indirect) utilisées
-  par les lignes `albums`/`artists`/`tags` pour les noms très longs :
-  sans objet pour `playlist_tree` (toujours en accès direct), mais à
-  garder en tête si une future version lit ces tables.
+- Le "far offset" (pointeur indirect pour les noms très longs) est géré
+  pour `artists` (`_parse_artist_row`), mais pas encore pour `albums`/
+  `tags` si une future version lit ces tables — la même logique
+  (bit `subtype & 0x04`) devrait s'appliquer.
 - Pas de récupération de l'espace laissé par les lignes supprimées
   (comme Rekordbox lui-même, d'après la doc).
 - Pas de suppression récursive de dossiers.

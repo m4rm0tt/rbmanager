@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Crate — Library Organizer</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="shell">
+  <nav class="sidebar">
+    <div class="brand">
+      <span class="brand-mark">◈</span>
+      <span class="brand-name">CRATE</span>
+    </div>
+    <div class="nav-group">
+      <button class="nav-item active" data-view="library">Library</button>
+      <button class="nav-item" data-view="organizer">Organizer</button>
+      <button class="nav-item" data-view="playlists">Playlists</button>
+      <button class="nav-item" data-view="artists">Artists</button>
+      <button class="nav-item" data-view="activity">Activity</button>
+      <button class="nav-item" data-view="settings">Settings</button>
+    </div>
+    <div class="sidebar-footer">
+      <div class="lib-indicator" id="lib-indicator">
+        <span class="dot dot-off"></span>
+        <span>No library loaded</span>
+      </div>
+    </div>
+  </nav>
+
+  <main class="content">
+
+    <!-- LIBRARY -->
+    <section class="view" id="view-library">
+      <header class="view-header">
+        <h1>Library</h1>
+        <p class="subtitle">Upload a Rekordbox <code>export.pdb</code> to start. Nothing on your USB drive is touched — this works on an uploaded copy.</p>
+      </header>
+
+      <div class="panel">
+        <div class="dropzone" id="dropzone">
+          <input type="file" id="file-input" accept=".pdb" hidden>
+          <div class="dropzone-icon">⇪</div>
+          <div class="dropzone-text">Drop <span class="mono">export.pdb</span> here, or click to browse</div>
+          <div class="dropzone-hint">PIONEER/rekordbox/export.pdb — DeviceSQL format (CDJ/XDJ, incl. XDJ-RX3)</div>
+        </div>
+        <div id="upload-status" class="status-line"></div>
+      </div>
+
+      <div class="stat-row" id="library-stats" hidden>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-tracks">—</div>
+          <div class="stat-label">Tracks</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="stat-playlists">—</div>
+          <div class="stat-label">Playlists</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value mono" id="stat-libid">—</div>
+          <div class="stat-label">Library ID</div>
+        </div>
+      </div>
+
+      <div class="panel" id="download-panel" hidden>
+        <h3>Export</h3>
+        <p class="dim">Download the modified <span class="mono">export.pdb</span> and copy it back over <span class="mono">PIONEER/rekordbox/export.pdb</span> on your USB drive.</p>
+        <button class="btn" id="btn-download">Download export.pdb</button>
+      </div>
+    </section>
+
+    <!-- ORGANIZER -->
+    <section class="view hidden" id="view-organizer">
+      <header class="view-header">
+        <h1>Organizer</h1>
+        <p class="subtitle">Classification runs Artist → Genre, not Track → Genre: every track by a known artist is classified instantly, only new artists trigger research.</p>
+      </header>
+
+      <div class="panel">
+        <button class="btn btn-accent" id="btn-analyze">Organize my library</button>
+        <span class="status-line" id="analyze-status"></span>
+      </div>
+
+      <div id="analysis-result" hidden>
+        <div class="stat-row">
+          <div class="stat-card"><div class="stat-value" id="an-tracks">—</div><div class="stat-label">Tracks</div></div>
+          <div class="stat-card"><div class="stat-value" id="an-artists">—</div><div class="stat-label">Unique artists</div></div>
+          <div class="stat-card"><div class="stat-value" id="an-known">—</div><div class="stat-label">Known in DB</div></div>
+          <div class="stat-card"><div class="stat-value" id="an-researched">—</div><div class="stat-label">Newly researched</div></div>
+        </div>
+
+        <div class="panel">
+          <h3>Proposed organization</h3>
+          <table class="data-table" id="plan-table">
+            <thead><tr><th>Genre / Playlist</th><th class="num">Tracks</th><th>Status</th></tr></thead>
+            <tbody></tbody>
+          </table>
+          <div class="action-row">
+            <button class="btn btn-accent" id="btn-apply">Apply Changes</button>
+            <span class="status-line" id="apply-status"></span>
+          </div>
+        </div>
+
+        <div class="panel chat-panel">
+          <h3>Refine with chat</h3>
+          <p class="dim">The chat only edits the plan below — nothing is written to your library until you press Apply Changes.</p>
+          <div class="chat-log" id="chat-log"></div>
+          <form id="chat-form" class="chat-form">
+            <input type="text" id="chat-input" placeholder='e.g. "Mets le baile funk dans Latino." / "Crée une catégorie White Girl Music."' autocomplete="off">
+            <button type="submit" class="btn">Send</button>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- PLAYLISTS -->
+    <section class="view hidden" id="view-playlists">
+      <header class="view-header">
+        <h1>Playlists</h1>
+        <p class="subtitle">Current playlist tree on the loaded library.</p>
+      </header>
+      <div class="panel">
+        <ul class="playlist-tree" id="playlist-tree"></ul>
+      </div>
+    </section>
+
+    <!-- ARTISTS -->
+    <section class="view hidden" id="view-artists">
+      <header class="view-header">
+        <h1>Artists</h1>
+        <p class="subtitle">The Artist Classification Database — a shared, persistent knowledge base. Corrections here apply to every future library.</p>
+      </header>
+      <div class="panel">
+        <div class="toolbar">
+          <input type="text" id="artist-search" placeholder="Search artists...">
+          <select id="artist-genre-filter"><option value="">All genres</option></select>
+        </div>
+        <table class="data-table" id="artists-table">
+          <thead><tr><th>Artist</th><th>Genre</th><th class="num">Confidence</th><th>Source</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ACTIVITY -->
+    <section class="view hidden" id="view-activity">
+      <header class="view-header">
+        <h1>Activity</h1>
+        <p class="subtitle">Every organization run on this library, with undo.</p>
+      </header>
+      <div class="panel">
+        <table class="data-table" id="activity-table">
+          <thead><tr><th>Date</th><th class="num">Tracks moved</th><th>Playlists created</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="view hidden" id="view-settings">
+      <header class="view-header">
+        <h1>Settings</h1>
+        <p class="subtitle">Genre categories for this library. Custom categories can also be created from the chat ("Crée une catégorie ...").</p>
+      </header>
+      <div class="panel">
+        <h3>Genres</h3>
+        <div class="chip-row" id="genre-chips"></div>
+        <form id="add-genre-form" class="inline-form">
+          <input type="text" id="new-genre-input" placeholder="New genre name">
+          <button type="submit" class="btn">Add</button>
+        </form>
+      </div>
+    </section>
+
+  </main>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
