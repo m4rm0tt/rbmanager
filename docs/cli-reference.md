@@ -1,8 +1,59 @@
 # Référence CLI — rbmanager
 
 Document de référence pour piloter `rbmanager` via un agent (Cowork, skill
-Claude) ou un script. Mis à jour au fil des versions ; ne contient pour
-l'instant que l'étape 0.
+Claude) ou un script. Mis à jour au fil des versions.
+
+## Deux exécutables
+
+- `rbmanager-etape0.exe` : diagnostic en lecture seule (garde son rôle
+  historique de validation, voir plus bas).
+- `rbmanager.exe` : l'exécutable principal. **Lancé sans argument, il
+  ouvre un menu interactif en texte** (pour un humain — fonctionne même
+  en double-cliquant dessus). **Lancé avec une sous-commande et des
+  arguments, il fonctionne en mode non-interactif** (pour un agent ou un
+  script) avec sortie JSON disponible sur `--format json` : c'est ce mode
+  qui est documenté ci-dessous, commande par commande. Le menu interactif
+  appelle exactement les mêmes fonctions en interne, le comportement est
+  donc garanti identique dans les deux modes.
+
+## `rbmanager list-playlists`
+
+Équivalent de `rbmanager-etape0` (voir plus bas), mais intégré à
+l'exécutable principal.
+
+```
+rbmanager.exe list-playlists --usb D:\ --format json
+```
+
+Mêmes arguments et même format de sortie que `rbmanager-etape0`
+ci-dessous (sans le champ `nb_playlists_racine`, remplacé par la
+longueur de la liste `playlists`).
+
+## `rbmanager show-playlist`
+
+Affiche le contenu (morceaux, dans l'ordre) d'une playlist.
+
+| Argument | Obligatoire | Description |
+|----------|-------------|--------------|
+| `--playlist-id` | Oui | ID de la playlist (voir `list-playlists`). |
+| `--usb` / `--db-path` | Oui (un des deux) | Comme pour `list-playlists`. |
+| `--format` | Non | `text` ou `json`. |
+
+Sortie JSON :
+```json
+{
+  "succes": true,
+  "playlist_id": "10",
+  "nb_morceaux": 3,
+  "morceaux": [
+    {"id": "111", "titre": "Nom du morceau"},
+    {"id": "222", "titre": "Autre morceau"}
+  ]
+}
+```
+
+Si `titre` vaut `"(titre inconnu)"`, la table `tracks` ne contenait pas
+d'entrée pour cet ID (ne devrait pas arriver sur une base saine).
 
 ## `rbmanager-etape0`
 
@@ -122,20 +173,20 @@ sauvegarde automatique que `delete-playlist`.
 | `--usb` / `--db-path` | Oui (un des deux) | Comme pour `rbmanager-etape0`. |
 | `--format` | Non | `text` ou `json`. |
 
-### Codes de sortie spécifiques à `rbmanager` (delete-playlist / remove-track)
+### Codes de sortie spécifiques à `rbmanager`
 
-| Code | Signification |
-|------|----------------|
-| 5 | Format non supporté en écriture (SQLCipher / Device Library Plus) |
-| 6 | Playlist introuvable |
-| 7 | Opération non supportée (ex : suppression d'un dossier) |
-| 8 | Le morceau n'était pas dans la playlist visée |
+| Code | Signification | Commandes concernées |
+|------|----------------|------------------------|
+| 5 | Format non supporté en écriture (SQLCipher / Device Library Plus) | delete-playlist, remove-track |
+| 6 | Playlist introuvable | show-playlist, delete-playlist |
+| 7 | Opération non supportée (ex : suppression d'un dossier) | delete-playlist |
+| 8 | Le morceau n'était pas dans la playlist visée | remove-track |
 
 Les codes 0, 2, 3, 4, 10 ont le même sens que pour `rbmanager-etape0`.
 
 ## Commandes à venir (v1, non encore implémentées)
 
-`create-playlist`, `add-track`, `show-playlist`, `suggest-playlist`. Ces
-opérations demandent d'allouer de nouvelles lignes dans le fichier (plus
-délicat que les bascules de bit de présence utilisées par les commandes
+`create-playlist`, `add-track`, `suggest-playlist`. Ces opérations
+demandent d'allouer de nouvelles lignes dans le fichier (plus délicat que
+les bascules de bit de présence utilisées par les commandes
 ci-dessus) et n'ont pas encore été implémentées ni testées.

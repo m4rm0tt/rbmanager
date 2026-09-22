@@ -4,34 +4,55 @@ Logiciel portable pour gérer les playlists Rekordbox directement sur une
 clé USB exportée — sans installation, pilotable en CLI par un humain ou
 par un agent (Cowork).
 
-## État actuel du projet : Étape 0
+## État actuel du projet
 
-Ce dépôt n'en est pour l'instant qu'à l'**étape 0** définie dans le cahier
-des charges : un script de validation qui se connecte à la base
-`export.pdb` d'une clé USB Rekordbox et liste les playlists existantes,
-sans rien modifier. L'objectif est de confirmer que `pyrekordbox` lit
-correctement la base produite par ta version de Rekordbox et ta structure
-de clé, avant de construire le reste (création/suppression/modification de
-playlists, tri semi-automatique, etc. — v1).
+Au-delà de l'étape 0 (validation de la connexion, toujours disponible via
+`rbmanager-etape0.exe`), le projet dispose maintenant d'un exécutable
+principal `rbmanager.exe` avec :
+- **Lecture** : lister les playlists (`list-playlists`), afficher le
+  contenu d'une playlist (`show-playlist`).
+- **Écriture** (format historique DeviceSQL uniquement, voir plus bas) :
+  retirer un morceau d'une playlist (`remove-track`), supprimer une
+  playlist (`delete-playlist`). Toujours précédée d'une sauvegarde
+  automatique horodatée.
+- Un **menu interactif en texte** (lancé automatiquement sans argument,
+  y compris en double-cliquant sur l'exécutable) pour un usage humain, en
+  plus du mode non-interactif pour un agent/script.
+
+Pas encore disponibles : création de playlist, ajout de morceau, tri
+semi-automatique à l'import (nécessitent d'allouer de nouvelles lignes
+dans le fichier, plus délicat — voir `docs/cli-reference.md`).
 
 ## ⚠️ Avertissements importants
 
 - **Ferme toujours Rekordbox avant d'utiliser cet outil.** Rekordbox
   verrouille sa base tant qu'il tourne ; l'utiliser en même temps peut
   corrompre `export.pdb`.
-- Cette étape 0 est en **lecture seule** : elle n'écrit jamais sur la clé.
-- Aucune sauvegarde automatique n'est encore nécessaire à ce stade
-  puisqu'aucune écriture n'a lieu (la sauvegarde automatique avant
-  modification arrivera avec la v1).
+- Les commandes d'écriture ne fonctionnent que sur le format historique
+  DeviceSQL (CDJ/XDJ classiques, dont la XDJ-RX3) — voir la section
+  « Deux formats d'export différents » plus bas. Sur le format
+  SQLCipher (Device Library Plus), seule la lecture est disponible.
+- Chaque écriture fait une sauvegarde automatique horodatée dans
+  `backups/` à la racine de la clé, avant toute modification.
+- **Teste toujours une nouvelle version sur une playlist jetable** créée
+  exprès, jamais directement sur tes vraies playlists, tant que tu n'as
+  pas confirmé que ça fonctionne comme attendu chez toi.
 
 ## Utilisation (humain)
 
-1. Branche ta clé USB Rekordbox (déjà éjectée du logiciel Rekordbox).
+1. Branche ta clé USB Rekordbox (déjà éjectée du logiciel Rekordbox) et ferme Rekordbox.
 2. Décompresse le zip livré — aucune installation requise.
-3. Lance l'exécutable en lui indiquant la racine de la clé :
+3. Double-clique sur `rbmanager.exe` (ou lance-le depuis un terminal sans
+   argument) : un menu en texte s'ouvre, te demande le chemin de la clé,
+   puis propose les actions disponibles (lister, afficher, retirer un
+   morceau, supprimer une playlist).
+
+Pour le diagnostic en lecture seule seul (étape 0), ou en ligne de
+commande directe :
 
 ```bash
 rbmanager-etape0.exe --usb E:\
+rbmanager.exe list-playlists --usb E:\
 ```
 
 (Remplace `E:\` par la lettre de lecteur de ta clé USB sous Windows, ou le

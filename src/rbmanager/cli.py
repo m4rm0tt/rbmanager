@@ -1,21 +1,23 @@
 """
-CLI d'écriture de rbmanager — début de la v1 (au-delà de l'étape 0).
+CLI unifiée de rbmanager — début de la v1 (au-delà de l'étape 0).
 
-Ces commandes MODIFIENT export.pdb. Elles ne fonctionnent pour l'instant
-que sur le format historique DeviceSQL (CDJ/XDJ classiques, dont la
-XDJ-RX3) : le format SQLCipher ("Device Library Plus") n'a pas encore
-d'équivalent d'écriture ici.
+Deux façons de piloter cet exécutable :
+- Mode non-interactif (pour Cowork / un agent) : `rbmanager <commande> --usb ... [--format json]`.
+  Toutes les commandes sont documentées dans docs/cli-reference.md.
+- Mode interactif (pour un humain) : lancer `rbmanager` sans aucun argument
+  (ou double-cliquer sur l'exécutable) ouvre un menu en texte. Le menu
+  appelle exactement les mêmes fonctions que le mode non-interactif : le
+  comportement est garanti identique dans les deux modes.
 
-Chaque commande d'écriture fait systématiquement, dans cet ordre :
-1. Une sauvegarde horodatée d'export.pdb dans backups/ (jamais désactivable).
-2. La modification en mémoire.
-3. L'écriture sur le disque, seulement si tout s'est bien passé.
-
-Toutes les opérations d'écriture actuellement disponibles (suppression de
-playlist, retrait de morceau) ne font que basculer des bits de présence
-déjà alloués : elles ne réorganisent jamais l'espace du fichier. C'est
-volontaire, pour limiter le risque de corruption tant que l'ajout de
-nouvelles lignes (qui demande d'allouer de l'espace) n'a pas été
+Les commandes d'écriture (delete-playlist, remove-track) ne fonctionnent
+pour l'instant que sur le format historique DeviceSQL (CDJ/XDJ classiques,
+dont la XDJ-RX3) : le format SQLCipher ("Device Library Plus") n'a pas
+encore d'équivalent d'écriture ici. Chaque écriture fait systématiquement,
+dans cet ordre : (1) une sauvegarde horodatée dans backups/, (2) la
+modification en mémoire, (3) l'écriture sur le disque si tout s'est bien
+passé. Les opérations disponibles ne font que basculer des bits de
+présence déjà alloués (aucune réorganisation du tas), pour limiter le
+risque de corruption tant que l'ajout de nouvelles lignes n'a pas été
 implémenté ni testé aussi largement.
 """
 
@@ -27,20 +29,26 @@ import sys
 
 from rbmanager.backup import sauvegarder
 from rbmanager.etape0 import (
+    EXIT_ASSOCIATION_INTROUVABLE,
     EXIT_BASE_CORROMPUE,
     EXIT_ERREUR_INCONNUE,
+    EXIT_FORMAT_NON_SUPPORTE,
     EXIT_OK,
+    EXIT_OPERATION_NON_SUPPORTEE,
+    EXIT_PLAYLIST_INTROUVABLE,
     ErreurConnexion,
+    afficher_texte,
+    classifier_exception,
+    contenu_playlist_classic,
+    contenu_playlist_sqlcipher,
     detecter_format,
+    lister_playlists,
+    lister_playlists_classic,
+    ouvrir_base,
     resoudre_chemin_export_pdb,
     verifier_structure_cle,
 )
 from rbmanager.pdb_format import PdbFile, PdbFormatError
-
-EXIT_FORMAT_NON_SUPPORTE = 5  # Écriture demandée sur un format qui n'est pas encore pris en charge.
-EXIT_PLAYLIST_INTROUVABLE = 6
-EXIT_OPERATION_NON_SUPPORTEE = 7  # Ex: suppression d'un dossier.
-EXIT_ASSOCIATION_INTROUVABLE = 8  # Le morceau n'était pas dans la playlist visée.
 
 
 def _ouvrir_pdb_classique(chemin) -> PdbFile:
@@ -67,6 +75,80 @@ def _sortie(succes: bool, args, **champs) -> int:
         else:
             print(f"ERREUR : {champs.get('erreur', 'échec inconnu')}", file=sys.stderr)
     return EXIT_OK if succes else champs.get("code_sortie", EXIT_ERREUR_INCONNUE)
+
+
+def commande_list_playlists(args) -> int:
+    db = None
+    try:
+        chemin = resoudre_chemin_export_pdb(args.usb, args.db_path)
+        verifier_structure_cle(chemin)
+        format_detecte = detecter_format(chemin)
+        if format_detecte == "classic":
+            playlists = lister_playlists_classic(chemin)
+        else:
+            db = ouvrir_base(chemin, None)
+            try:
+                playlists = lister_playlists(db)
+            except Exception as exc:  # noqa: BLE001
+                raise classifier_exception(exc) from exc
+    except ErreurConnexion as exc:
+        return _sortie(False, args, erreur=str(exc), code_sortie=exc.code_sortie)
+    finally:
+        if db is not None:
+            db.close()
+
+    if args.format == "json":
+        return _sortie(
+            True,
+            args,
+            chemin_export_pdb=str(chemin),
+            format_detecte=format_detecte,
+            playlists=[p.vers_dict() for p in playlists],
+        )
+    print(f"Format détecté : {format_detecte}")
+    if not playlists:
+        print("Aucune playlist trouvée sur cette clé.")
+    else:
+        afficher_texte(playlists)
+    return EXIT_OK
+
+
+def commande_show_playlist(args) -> int:
+    db = None
+    try:
+        chemin = resoudre_chemin_export_pdb(args.usb, args.db_path)
+        verifier_structure_cle(chemin)
+        format_detecte = detecter_format(chemin)
+        if format_detecte == "classic":
+            morceaux = contenu_playlist_classic(chemin, args.playlist_id)
+        else:
+            db = ouvrir_base(chemin, None)
+            try:
+                morceaux = contenu_playlist_sqlcipher(db, args.playlist_id)
+            except ErreurConnexion:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise classifier_exception(exc) from exc
+    except ErreurConnexion as exc:
+        return _sortie(False, args, erreur=str(exc), code_sortie=exc.code_sortie)
+    finally:
+        if db is not None:
+            db.close()
+
+    if args.format == "json":
+        return _sortie(
+            True,
+            args,
+            playlist_id=args.playlist_id,
+            nb_morceaux=len(morceaux),
+            morceaux=[m.vers_dict() for m in morceaux],
+        )
+    if not morceaux:
+        print("Cette playlist ne contient aucun morceau.")
+    else:
+        for i, m in enumerate(morceaux, start=1):
+            print(f"{i:>3}. {m.titre}  (id={m.id})")
+    return EXIT_OK
 
 
 def commande_delete_playlist(args) -> int:
@@ -126,14 +208,26 @@ def commande_remove_track(args) -> int:
 
 
 def construire_parseur() -> argparse.ArgumentParser:
-    parseur = argparse.ArgumentParser(prog="rbmanager", description="Gestionnaire de playlists Rekordbox pour clé USB.")
-    sous_parseurs = parseur.add_subparsers(dest="commande", required=True)
+    parseur = argparse.ArgumentParser(
+        prog="rbmanager",
+        description="Gestionnaire de playlists Rekordbox pour clé USB. Sans argument : menu interactif.",
+    )
+    sous_parseurs = parseur.add_subparsers(dest="commande")
 
     def ajouter_arguments_communs(p: argparse.ArgumentParser) -> None:
         groupe = p.add_mutually_exclusive_group(required=True)
         groupe.add_argument("--usb", help="Chemin racine de la clé USB.")
         groupe.add_argument("--db-path", help="Chemin direct vers export.pdb.")
         p.add_argument("--format", choices=["text", "json"], default="text")
+
+    p_list = sous_parseurs.add_parser("list-playlists", help="Liste les playlists (et dossiers) de la clé.")
+    ajouter_arguments_communs(p_list)
+    p_list.set_defaults(func=commande_list_playlists)
+
+    p_show = sous_parseurs.add_parser("show-playlist", help="Affiche le contenu (morceaux) d'une playlist.")
+    p_show.add_argument("--playlist-id", required=True)
+    ajouter_arguments_communs(p_show)
+    p_show.set_defaults(func=commande_show_playlist)
 
     p_delete = sous_parseurs.add_parser("delete-playlist", help="Supprime une playlist (pas un dossier) et ses morceaux.")
     p_delete.add_argument("--playlist-id", required=True, help="ID de la playlist à supprimer.")
@@ -150,6 +244,16 @@ def construire_parseur() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+
+    if not argv:
+        # Aucun argument : on lance le menu interactif plutôt que d'exiger
+        # une sous-commande, pour qu'un humain puisse juste double-cliquer
+        # sur l'exécutable (voir docstring du module).
+        from rbmanager.interactive import lancer_menu_interactif
+
+        return lancer_menu_interactif()
+
     args = construire_parseur().parse_args(argv)
     return args.func(args)
 

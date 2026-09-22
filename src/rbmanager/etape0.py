@@ -40,6 +40,10 @@ EXIT_OK = 0
 EXIT_CLE_INTROUVABLE = 2       # Pas de export.pdb trouvé à l'emplacement attendu
 EXIT_BASE_CORROMPUE = 3        # export.pdb trouvé mais illisible / déchiffrement impossible
 EXIT_REKORDBOX_OUVERT = 4      # Rekordbox tourne encore et verrouille la base
+EXIT_FORMAT_NON_SUPPORTE = 5   # Opération d'écriture demandée sur un format qui ne la supporte pas encore
+EXIT_PLAYLIST_INTROUVABLE = 6
+EXIT_OPERATION_NON_SUPPORTEE = 7  # Ex : suppression d'un dossier
+EXIT_ASSOCIATION_INTROUVABLE = 8  # Le morceau n'était pas dans la playlist visée
 EXIT_ERREUR_INCONNUE = 10      # Tout autre échec imprévu
 
 
@@ -67,6 +71,15 @@ class InfoPlaylist:
             "nb_morceaux": self.nb_morceaux,
             "enfants": [e.vers_dict() for e in self.enfants],
         }
+
+
+@dataclass
+class InfoMorceau:
+    id: str
+    titre: str
+
+    def vers_dict(self) -> dict[str, Any]:
+        return {"id": self.id, "titre": self.titre}
 
 
 def resoudre_chemin_export_pdb(usb: str | None, db_path: str | None) -> Path:
@@ -174,6 +187,44 @@ def lister_playlists_classic(chemin_export_pdb: Path) -> list[InfoPlaylist]:
             racine.append(noeud)
 
     return racine
+
+
+def contenu_playlist_classic(chemin_export_pdb: Path, playlist_id: str) -> list[InfoMorceau]:
+    """Liste les morceaux (dans l'ordre) d'une playlist, format historique DeviceSQL."""
+    from rbmanager.pdb_format import PdbFile, PdbFormatError
+
+    try:
+        db = PdbFile(chemin_export_pdb)
+        tree_rows = db.playlist_tree_rows()
+        if not any(r.id == playlist_id for r in tree_rows):
+            raise ErreurConnexion(f"Playlist introuvable (id={playlist_id}).", EXIT_PLAYLIST_INTROUVABLE)
+        entries = sorted(
+            (e for e in db.playlist_entry_rows() if e.playlist_id == playlist_id),
+            key=lambda e: e.entry_index,
+        )
+        titres = db.track_titles()
+    except PdbFormatError as exc:
+        raise ErreurConnexion(str(exc), EXIT_BASE_CORROMPUE) from exc
+    except (struct.error, IndexError, UnicodeDecodeError) as exc:
+        raise ErreurConnexion(
+            f"Le fichier ne respecte pas la structure attendue du format export.pdb : {exc}",
+            EXIT_BASE_CORROMPUE,
+        ) from exc
+
+    return [InfoMorceau(id=e.track_id, titre=titres.get(e.track_id) or "(titre inconnu)") for e in entries]
+
+
+def contenu_playlist_sqlcipher(db: Any, playlist_id: str) -> list[InfoMorceau]:
+    """Liste les morceaux d'une playlist, format SQLCipher (Device Library Plus)."""
+    ligne = db.get_playlist(ID=playlist_id)
+    if ligne is None:
+        raise ErreurConnexion(f"Playlist introuvable (id={playlist_id}).", EXIT_PLAYLIST_INTROUVABLE)
+
+    morceaux = []
+    for song in ligne.Songs:
+        titre = song.Content.Title if song.Content is not None else None
+        morceaux.append(InfoMorceau(id=song.ContentID, titre=titre or "(titre inconnu)"))
+    return morceaux
 
 
 def classifier_exception(exc: Exception) -> ErreurConnexion:
