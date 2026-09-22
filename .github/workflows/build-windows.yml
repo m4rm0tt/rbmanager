@@ -26,7 +26,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
-      - name: Builder rbmanager-etape0.exe
+      - name: "Builder rbmanager-etape0.exe (lecture seule - liste les playlists)"
         run: |
           pyinstaller --onefile --name rbmanager-etape0 `
             --hidden-import sqlalchemy.dialects.sqlite.pysqlcipher `
@@ -35,13 +35,29 @@ jobs:
             --paths src `
             src/rbmanager/etape0.py
 
-      - name: Vérifier que l'exécutable se lance
+      - name: "Builder rbmanager.exe (écriture - delete-playlist, remove-track)"
+        run: |
+          pyinstaller --onefile --name rbmanager `
+            --hidden-import sqlalchemy.dialects.sqlite.pysqlcipher `
+            --hidden-import sqlcipher3 `
+            --hidden-import sqlcipher3.dbapi2 `
+            --paths src `
+            src/rbmanager/cli.py
+
+      - name: Vérifier que les exécutables se lancent
         run: |
           ./dist/rbmanager-etape0.exe --usb C:\ne-devrait-pas-exister --format json
+          ./dist/rbmanager.exe delete-playlist --usb C:\ne-devrait-pas-exister --playlist-id 1 --format json
         continue-on-error: true
 
       - uses: actions/upload-artifact@v4
         with:
           name: rbmanager-etape0-windows
           path: dist/rbmanager-etape0.exe
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rbmanager-windows
+          path: dist/rbmanager.exe
           if-no-files-found: error
