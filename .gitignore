@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+.venv/
+venv/
+build/
+dist/
+*.spec.bak
+.pytest_cache/
+
+# PyInstaller
+*.spec
+!/packaging/*.spec
+
+# Logs applicatifs
+logs/
+*.log
+
+# Sauvegardes de bases Rekordbox (jamais versionnées)
+backups/
+
+# Fichiers de test locaux (bases Rekordbox factices, clés USB simulées)
+*.pdb
+*.edb
+
+# Éditeurs / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

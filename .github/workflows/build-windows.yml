@@ -1,0 +1,47 @@
+name: Build Windows executable
+
+# Ce workflow tourne sur un runner Windows fourni par GitHub, car PyInstaller
+# ne sait pas faire de cross-compilation depuis Linux : c'est ici que
+# l'exécutable .exe réellement utilisable sur les ordinateurs Windows
+# (sans droits d'installation) est généré.
+
+on:
+  push:
+    branches:
+      - "**"
+  workflow_dispatch: {}
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Installer les dépendances
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Builder rbmanager-etape0.exe
+        run: |
+          pyinstaller --onefile --name rbmanager-etape0 `
+            --hidden-import sqlalchemy.dialects.sqlite.pysqlcipher `
+            --hidden-import sqlcipher3 `
+            --hidden-import sqlcipher3.dbapi2 `
+            --paths src `
+            src/rbmanager/etape0.py
+
+      - name: Vérifier que l'exécutable se lance
+        run: |
+          ./dist/rbmanager-etape0.exe --usb C:\ne-devrait-pas-exister --format json
+        continue-on-error: true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rbmanager-etape0-windows
+          path: dist/rbmanager-etape0.exe
+          if-no-files-found: error

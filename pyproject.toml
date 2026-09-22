@@ -1,0 +1,9 @@
+[project]
+name = "rbmanager"
+version = "0.0.1"
+description = "Gestionnaire portable de playlists Rekordbox pour clé USB"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
